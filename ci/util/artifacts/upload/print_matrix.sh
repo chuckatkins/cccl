@@ -18,4 +18,5 @@ if [[ "$#" -ne 0 ]]; then
   exit 1
 fi
 
-jq -c '.' "${ARTIFACT_UPLOAD_REGISTERY:?}"
+jq -c --arg prefix "${WORKFLOW_ID:+${WORKFLOW_ID}-}" \
+  'map(.name = $prefix + .name)' "${ARTIFACT_UPLOAD_REGISTERY:?}"

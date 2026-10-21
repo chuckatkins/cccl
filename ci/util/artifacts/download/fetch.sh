@@ -25,7 +25,7 @@ if [[ "$#" -lt 2 ]]; then
   exit 1
 fi
 
-readonly artifact_name="$1"
+readonly artifact_name="${WORKFLOW_ID:+${WORKFLOW_ID}-}$1"
 
 # Create the target directory and then get its absolute path
 mkdir -p "$2"

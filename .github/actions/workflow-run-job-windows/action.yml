@@ -2,6 +2,12 @@ name: "Run Windows Job"
 description: "Run a job on a Windows runner."
 
 inputs:
+  workflow_id:
+    description: >-
+      Invocation identifier for scoped artifacts and results. Empty preserves
+      unscoped behavior.
+    required: false
+    default: ""
   id:
     description: "A unique identifier."
     required: true
@@ -47,6 +53,7 @@ runs:
         # semicolons and other special characters (e.g. `-arch "60;70;80"`).
         COMMAND: "${{inputs.command}}"
         ENVIRONMENT: ${{ inputs.environment }}
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
         GH_TOKEN: ${{ github.token }}
       run: |
         echo "::group::️🔍 Job Vars"
@@ -54,6 +61,7 @@ runs:
 
         # Define the job input parameters as JOB_* environment variables that are visible in all steps:
         echo "JOB_ID=${{inputs.id}}" | tee -a "${GITHUB_ENV}"
+        echo "WORKFLOW_ID=${WORKFLOW_ID}" | tee -a "${GITHUB_ENV}"
         echo "JOB_RUNNER=${{inputs.runner}}" | tee -a "${GITHUB_ENV}"
         echo "JOB_IMAGE=${{inputs.image}}" | tee -a "${GITHUB_ENV}"
         echo "JOB_CUDA=${{inputs.cuda}}" | tee -a "${GITHUB_ENV}"
@@ -240,6 +248,7 @@ runs:
           --env "GITHUB_RUN_ID=$GITHUB_RUN_ID" \
           --env "GITHUB_SHA=$GITHUB_SHA" \
           --env "JOB_ID=${{inputs.id}}" \
+          --env "WORKFLOW_ID=$WORKFLOW_ID" \
           --env "RUNNER_TEMP=${{env.RUNNER_TEMP_HOST}}" \
           --env "SCCACHE_BUCKET=${{env.SCCACHE_BUCKET}}" \
           --env "SCCACHE_IDLE_TIMEOUT=${{env.SCCACHE_IDLE_TIMEOUT}}" \

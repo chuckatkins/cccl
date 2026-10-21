@@ -28,6 +28,12 @@ on:
     - cron: '0 3 * * 1-5' # 3AM UTC, 11PM EST, 8PM PST, Mon-Fri
   workflow_call:
     inputs:
+      workflow_id:
+        description: >-
+          Unique identifier for this invocation within a run. Use letters,
+          digits, dots, hyphens, or underscores; empty keeps unscoped artifacts.
+        type: string
+        default: ""
       matrix_ref:
         description: "Matrix branch, tag, or SHA. Defaults to the calling ref."
         type: string
@@ -54,7 +60,7 @@ on:
         required: false
 
 concurrency:
-  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}-nightly-${{ inputs.matrix_ref }}-${{ inputs.matrix_path }}
+  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}-nightly-${{ inputs.workflow_id }}-${{ inputs.matrix_ref }}-${{ inputs.matrix_path }}
 
 jobs:
 
@@ -63,12 +69,13 @@ jobs:
     uses: $/.github/workflows/ci-matrix-build.yml
     secrets: inherit
     with:
+      workflow_id: ${{ inputs.workflow_id }}
       workflows: nightly
       matrix_ref: ${{ inputs.matrix_ref || github.ref }}
       matrix_path: ${{ inputs.matrix_path || 'ci/matrix.yaml' }}
 
   build-rapids:
-    name: Build RAPIDS
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build RAPIDS
     if: ${{ contains(fromJSON('["NVIDIA", "NVIDIA-dev"]'), github.repository_owner) }}
     secrets: inherit
     permissions:
@@ -82,7 +89,7 @@ jobs:
       enable_slack_alerts: true
 
   build-matx:
-    name: Build MatX
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build MatX
     if: ${{ contains(fromJSON('["NVIDIA", "NVIDIA-dev"]'), github.repository_owner) }}
     secrets: inherit
     permissions:
@@ -93,7 +100,7 @@ jobs:
       enable_slack_alerts: true
 
   build-pytorch:
-    name: Build PyTorch
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build PyTorch
     if: ${{ contains(fromJSON('["NVIDIA", "NVIDIA-dev"]'), github.repository_owner) }}
     secrets: inherit
     permissions:
@@ -104,7 +111,7 @@ jobs:
       enable_slack_alerts: true
 
   analyze-failures:
-    name: Analyze nightly failures
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Analyze nightly failures
     if: >-
       ${{
         always() &&
@@ -170,7 +177,7 @@ jobs:
           format: slack
 
   publish-failure-notification:
-    name: Post nightly failure notification to Slack
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Post nightly failure notification to Slack
     if: >-
       ${{
         always() &&

@@ -2,6 +2,12 @@ name: "Run Linux Job"
 description: "Run a job on a Linux runner."
 
 inputs:
+  workflow_id:
+    description: >-
+      Invocation identifier for scoped artifacts and results. Empty preserves
+      unscoped behavior.
+    required: false
+    default: ""
   id:
     description: "A unique identifier."
     required: true
@@ -38,15 +44,17 @@ runs:
         # semicolons and other special characters (e.g. `-arch "60;70;80"`).
         COMMAND: "${{inputs.command}}"
         ENVIRONMENT: ${{ inputs.environment }}
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
         GH_TOKEN: ${{ github.token }}
       run: |
-        echo -e "\e[1;34mMock with: ci/util/create_mock_job_env.sh $GITHUB_RUN_ID ${{inputs.id}}\e[0m"
+        echo -e "\e[1;34mMock with: ci/util/create_mock_job_env.sh $GITHUB_RUN_ID ${{inputs.id}} $WORKFLOW_ID\e[0m"
 
         echo "::group::️🔍 Job Inputs"
         echo "Job command: ${COMMAND}" # Intentionally not passing to GITUB_ENV, arg handling is fragile.
 
         # Define the job input parameters as JOB_* environment variables that are visible in all steps:
         echo "JOB_ID=${{inputs.id}}"               | tee -a $GITHUB_ENV
+        echo "WORKFLOW_ID=${WORKFLOW_ID}" | tee -a "${GITHUB_ENV}"
         echo "JOB_RUNNER=${{inputs.runner}}"       | tee -a $GITHUB_ENV
         echo "JOB_IMAGE=${{inputs.image}}"         | tee -a $GITHUB_ENV
         echo "JOB_CUDA=${{inputs.cuda}}"           | tee -a $GITHUB_ENV
@@ -134,7 +142,7 @@ runs:
         git config --global --add safe.directory "$(pwd)"
 
         echo -e "\e[1;34mRunning as '$(whoami)' user in $(pwd):\e[0m"
-        echo -e "\e[1;34mMock with: ci/util/create_mock_job_env.sh $GITHUB_RUN_ID $JOB_ID\e[0m"
+        echo -e "\e[1;34mMock with: ci/util/create_mock_job_env.sh $GITHUB_RUN_ID $JOB_ID $WORKFLOW_ID\e[0m"
         echo -e "\e[1;34m${COMMAND}\e[0m"
         exit_code=0
         eval "${COMMAND}" || exit_code=$?
@@ -224,6 +232,7 @@ runs:
             --env "GITHUB_REPOSITORY=$GITHUB_REPOSITORY" \
             --env "HOST_WORKSPACE=${{github.workspace}}" \
             --env "JOB_ID=$JOB_ID" \
+            --env "WORKFLOW_ID=$WORKFLOW_ID" \
             --env "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-}" \
             --env "RUNNER_TEMP=$RUNNER_TEMP" \
             ${ENVARGS:-} \

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage=$(cat <<EOF
-Usage: $0 <run id> <job_id>
+Usage: $0 <run id> <job_id> [workflow_id]
 
 Allows the scripts in ci/util/workflow and ci/util/artifacts to run as though they are running in a CI environment.
 
@@ -26,7 +26,7 @@ EOF
 )
 readonly usage
 
-if [[ "$#" -ne 2 ]]; then
+if [[ "$#" -lt 2 || "$#" -gt 3 ]]; then
   echo "Error: Invalid number of arguments." >&2
   echo "$usage" >&2
   exit 1
@@ -50,6 +50,7 @@ ci_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)
 export GITHUB_ACTIONS=true
 export GITHUB_RUN_ID="$1"
 export JOB_ID="$2"
+export WORKFLOW_ID="${3:-}"
 
 (
   # shellcheck source=ci/util/workflow/common.sh

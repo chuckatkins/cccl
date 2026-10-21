@@ -7,6 +7,12 @@ defaults:
 on:
   workflow_call:
     inputs:
+      workflow_id:
+        description: >-
+          Unique identifier for this invocation within a run. Use letters,
+          digits, dots, hyphens, or underscores; empty keeps unscoped artifacts.
+        type: string
+        default: ""
       job-array:
         description: "The dispatch.json's linux_standalone.jobs.<name> array of dispatch jobs."
         type: string
@@ -33,6 +39,7 @@ jobs:
       - name: Run job
         uses: $/.github/actions/workflow-run-job-linux
         with:
+          workflow_id: ${{ inputs.workflow_id }}
           id:          ${{ matrix.id }}
           environment: ${{ matrix.environment }}
           command:     ${{ matrix.command }}

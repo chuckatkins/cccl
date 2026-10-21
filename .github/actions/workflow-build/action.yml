@@ -2,6 +2,12 @@ name: "CCCL Build Workflow"
 description: "Parses a matrix definition and exports a set of dispatchable build/test/etc jobs."
 
 inputs:
+  workflow_id:
+    description: >-
+      Invocation identifier for scoped artifacts and results. Empty preserves
+      unscoped behavior.
+    required: false
+    default: ""
   workflows:
     description: "Space separated list of workflows in matrix file to run"
     required: true
@@ -57,7 +63,7 @@ runs:
       uses: slackapi/slack-github-action@v1.26.0
       env:
         SLACK_BOT_TOKEN: ${{ inputs.slack_token }}
-        WORKFLOW_TYPE: ${{ github.workflow }} # nightly, weekly, pr, etc.
+        WORKFLOW_TYPE: ${{ inputs.workflow_id || github.workflow }} # nightly, weekly, pr, etc.
         SUMMARY_URL: https://github.com/${{github.repository}}/actions/runs/${{github.run_id}}
       with:
         channel-id: ${{ inputs.slack_log }}
@@ -81,6 +87,7 @@ runs:
       id: build-workflow
       shell: bash --noprofile --norc -euo pipefail {0}
       env:
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
         allow_override: ${{ inputs.allow_override == 'true' && '--allow-override' || ''}}
         exclude_gpu_jobs: ${{ !contains(fromJSON('["NVIDIA", "NVIDIA-dev"]'), github.repository_owner) && '--exclude-gpu-jobs' || '' }}
         full_build_projects_flag: ${{ inputs.inspect_changes_script != '' && '--full-build-projects' || ''}}
@@ -89,6 +96,11 @@ runs:
         lite_build_projects: ${{ inputs.inspect_changes_script != '' && steps.inspect-changes.outputs.LITE_BUILD || ''}}
         matrix_parser: ${{ inputs.matrix_parser && inputs.matrix_parser || '${GITHUB_ACTION_PATH}/build-workflow.py' }}
       run: |
+        if [[ ! "${WORKFLOW_ID}" =~ ^[A-Za-z0-9_.-]*$ ]]; then
+          echo "::error::workflow_id must contain only letters, digits, dots, hyphens, or underscores."
+          exit 1
+        fi
+
         echo "Parsing matrix file into a workflow..."
 
         echo "::group::Generating GHA workflow from matrix.yaml"
@@ -189,7 +201,7 @@ runs:
     - name: Upload artifacts
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
       with:
-        name: workflow
+        name: ${{ inputs.workflow_id && format('{0}-', inputs.workflow_id) || '' }}workflow
         path: workflow/
         compression-level: 0
 
@@ -198,7 +210,7 @@ runs:
       uses: slackapi/slack-github-action@v1.26.0
       env:
         SLACK_BOT_TOKEN: ${{ inputs.slack_token }}
-        WORKFLOW_TYPE: ${{ github.workflow }} # nightly, weekly, pr, etc.
+        WORKFLOW_TYPE: ${{ inputs.workflow_id || github.workflow }} # nightly, weekly, pr, etc.
         SUMMARY_URL: https://github.com/${{github.repository}}/actions/runs/${{github.run_id}}
         CHANNEL_SEP: ${{ (inputs.slack_log != '' && inputs.slack_alert != '') && ',' || ''}}
       with:

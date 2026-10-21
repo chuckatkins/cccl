@@ -28,6 +28,12 @@ on:
     - cron: "0 8 * * 0" # Every Sunday at 00:00 PST, 03:00 EST, 08:00 UTC
   workflow_call:
     inputs:
+      workflow_id:
+        description: >-
+          Unique identifier for this invocation within a run. Use letters,
+          digits, dots, hyphens, or underscores; empty keeps unscoped artifacts.
+        type: string
+        default: ""
       matrix_ref:
         description: "Matrix branch, tag, or SHA. Defaults to the calling ref."
         type: string
@@ -51,7 +57,7 @@ on:
         required: false
 
 concurrency:
-  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}-weekly-${{ inputs.matrix_ref }}-${{ inputs.matrix_path }}
+  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}-weekly-${{ inputs.workflow_id }}-${{ inputs.matrix_ref }}-${{ inputs.matrix_path }}
 
 jobs:
 
@@ -60,6 +66,7 @@ jobs:
     uses: $/.github/workflows/ci-matrix-build.yml
     secrets: inherit
     with:
+      workflow_id: ${{ inputs.workflow_id }}
       workflows: weekly
       matrix_ref: ${{ inputs.matrix_ref || github.ref }}
       matrix_path: ${{ inputs.matrix_path || 'ci/matrix.yaml' }}
@@ -68,7 +75,7 @@ jobs:
   # included in this job's direct or transitive `needs` so log collection starts
   # after they finish.
   analyze-failures:
-    name: Analyze weekly failures
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Analyze weekly failures
     if: >-
       ${{
         always() &&
@@ -126,7 +133,7 @@ jobs:
           format: slack
 
   publish-failure-notification:
-    name: Post weekly failure notification to Slack
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Post weekly failure notification to Slack
     if: >-
       ${{
         always() &&

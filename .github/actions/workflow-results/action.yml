@@ -2,6 +2,12 @@ name: "CCCL Workflow Sentinel"
 description: "Check the results of the dispatched jobs and comment on the PR."
 
 inputs:
+  workflow_id:
+    description: >-
+      Invocation identifier for scoped artifacts and results. Empty preserves
+      unscoped behavior.
+    required: false
+    default: ""
   github_token:
     description: "The GitHub token to use for commenting on the PR. No comment will be made if not provided."
     required: false
@@ -30,24 +36,26 @@ runs:
     - name: Download workflow artifacts
       uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7
       with:
-        name: workflow
+        name: ${{ inputs.workflow_id && format('{0}-', inputs.workflow_id) || '' }}workflow
         path: workflow/
 
     - name: Download job artifacts
       continue-on-error: true # This may fail if no jobs succeed. The checks below will catch this.
       env:
         GH_TOKEN: ${{ github.token }}
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
       shell: bash --noprofile --norc -euo pipefail {0}
       run: |
         artifact_dir=$(mktemp -d)
+        artifact_prefix="${WORKFLOW_ID:+${WORKFLOW_ID}-}"
         trap 'rm -rf "$artifact_dir"' EXIT
 
         # actions/download-artifact truncates discovery at 1000 artifacts; gh follows all pages.
         gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
-          --pattern 'zz_jobs-*' --dir "$artifact_dir"
+          --pattern "${artifact_prefix}zz_jobs-*" --dir "$artifact_dir"
 
         mkdir -p jobs
-        mv "$artifact_dir"/zz_jobs-*/* jobs/
+        mv "$artifact_dir"/"${artifact_prefix}"zz_jobs-*/* jobs/
 
     - name: Clean up job artifacts
       continue-on-error: true
@@ -95,10 +103,13 @@ runs:
 
     - name: Parse job times
       continue-on-error: true
+      env:
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
       shell: bash --noprofile --norc -euo pipefail {0}
       run: |
         echo "Parsing job times..."
-        python3 "${GITHUB_ACTION_PATH}/parse-job-times.py" workflow/workflow.json results/jobs.json
+        python3 "${GITHUB_ACTION_PATH}/parse-job-times.py" workflow/workflow.json results/jobs.json \
+          --workflow-id "${WORKFLOW_ID}"
 
         echo "::group::Unmapped jobs"
         cat workflow/unmapped_jobs.md || :
@@ -131,6 +142,8 @@ runs:
     - name: Prepare final summary
       id: final-summary
       continue-on-error: true
+      env:
+        WORKFLOW_ID: ${{ inputs.workflow_id }}
       shell: bash --noprofile --norc -euo pipefail {0}
       run: |
         python3 "${GITHUB_ACTION_PATH}/final-summary.py" | tee workflow/final_summary.md
@@ -143,7 +156,7 @@ runs:
         readonly success=${{ steps.check-jobs.outputs.success }}
         readonly icon=$(if ${success}; then echo "🥳"; else echo "😬"; fi)
         (
-          echo "## [${icon} Job Matrix Results]($(cat workflow/summary_url.txt))"
+          echo "## [${icon} Job Matrix Results${WORKFLOW_ID:+ (${WORKFLOW_ID})}]($(cat workflow/summary_url.txt))"
           declare -a files=(
             workflow/final_summary.md
             workflow/unmapped_jobs.md
@@ -162,7 +175,7 @@ runs:
         # Just link to the summary where the above step summary will be available.
         echo "::group::PR Comment"
         (
-          echo "## ${icon} CI Workflow Results"
+          echo "## ${icon} CI Workflow Results${WORKFLOW_ID:+ (${WORKFLOW_ID})}"
           echo ""
           echo "### $(cat execution/heading.txt)"
           echo ""
@@ -176,7 +189,7 @@ runs:
       uses: marocchino/sticky-pull-request-comment@67d0dec7b07ed060a405f9b2a64b8ab319fdd7db  # v2.9.2
       with:
         github_token: ${{ inputs.github_token }}
-        header: ci-results
+        header: ci-results${{ inputs.workflow_id && format('-{0}', inputs.workflow_id) || '' }}
         number: ${{ inputs.pr_number }}
         path: pr_comment.md
         hide_and_recreate: true
@@ -212,7 +225,7 @@ runs:
       uses: slackapi/slack-github-action@70cd7be8e40a46e8b0eced40b0de447bdb42f68e # v1.26.0
       env:
         SLACK_BOT_TOKEN: ${{ inputs.slack_token }}
-        WORKFLOW_TYPE: ${{ github.workflow }} # nightly, weekly, pr, etc.
+        WORKFLOW_TYPE: ${{ inputs.workflow_id || github.workflow }} # nightly, weekly, pr, etc.
         STATUS: ${{ steps.check-workflow.outcome }}
         EXEC_SUMMARY: ${{ steps.final-summary.outputs.EXEC_SUMMARY }}
         SUMMARY_URL: https://github.com/${{github.repository}}/actions/runs/${{github.run_id}}
@@ -229,7 +242,7 @@ runs:
       id: failure-message
       if: ${{ failure() }}
       env:
-        WORKFLOW_TYPE: ${{ github.workflow }} # nightly, weekly, pr, etc.
+        WORKFLOW_TYPE: ${{ inputs.workflow_id || github.workflow }} # nightly, weekly, pr, etc.
         EXEC_SUMMARY: ${{ steps.final-summary.outputs.EXEC_SUMMARY }}
         SUMMARY_URL: https://github.com/${{github.repository}}/actions/runs/${{github.run_id}}
       shell: bash --noprofile --norc -euo pipefail {0}

@@ -26,6 +26,12 @@ on:
       - "pull-request/[0-9]+"
   workflow_call:
     inputs:
+      workflow_id:
+        description: >-
+          Unique identifier for this invocation within a run. Use letters,
+          digits, dots, hyphens, or underscores; empty keeps unscoped artifacts.
+        type: string
+        default: ""
       matrix_ref:
         description: "Matrix branch, tag, or SHA. Defaults to the calling ref."
         type: string
@@ -49,12 +55,12 @@ on:
         required: false
 
 concurrency:
-  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}-pull-request-${{ inputs.matrix_ref }}-${{ inputs.matrix_path }}
+  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}-pull-request-${{ inputs.workflow_id }}-${{ inputs.matrix_ref }}-${{ inputs.matrix_path }}
   cancel-in-progress: true
 
 jobs:
   build-workflow:
-    name: Build workflow from matrix
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build workflow from matrix
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -253,6 +259,7 @@ jobs:
         id: build-workflow
         uses: $/.github/actions/workflow-build
         with:
+          workflow_id: ${{ inputs.workflow_id }}
           matrix_file: ${{ runner.temp }}/matrix.yaml
           github_token: ${{ secrets.GITHUB_TOKEN }}
           pr_number: ${{ steps.export-pr-info.outputs.pr_number }}
@@ -267,7 +274,7 @@ jobs:
             ) }}
 
   dispatch-groups-linux-two-stage:
-    name: ${{ matrix.name }}
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}${{ matrix.name }}
     if: >-
       ${{
         needs.build-workflow.outputs.matrix_enabled == 'true' &&
@@ -283,10 +290,11 @@ jobs:
         name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['linux_two_stage']['keys'] }}
     uses: $/.github/workflows/workflow-dispatch-two-stage-group-linux.yml
     with:
+      workflow_id: ${{ inputs.workflow_id }}
       pc-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['linux_two_stage']['jobs'][matrix.name]) }}
 
   dispatch-groups-windows-two-stage:
-    name: ${{ matrix.name }}
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}${{ matrix.name }}
     if: >-
       ${{
         needs.build-workflow.outputs.matrix_enabled == 'true' &&
@@ -302,10 +310,11 @@ jobs:
         name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['windows_two_stage']['keys'] }}
     uses: $/.github/workflows/workflow-dispatch-two-stage-group-windows.yml
     with:
+      workflow_id: ${{ inputs.workflow_id }}
       pc-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['windows_two_stage']['jobs'][matrix.name]) }}
 
   dispatch-groups-linux-standalone:
-    name: ${{ matrix.name }}
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}${{ matrix.name }}
     if: >-
       ${{
         needs.build-workflow.outputs.matrix_enabled == 'true' &&
@@ -321,10 +330,11 @@ jobs:
         name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['linux_standalone']['keys'] }}
     uses: $/.github/workflows/workflow-dispatch-standalone-group-linux.yml
     with:
+      workflow_id: ${{ inputs.workflow_id }}
       job-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['linux_standalone']['jobs'][matrix.name]) }}
 
   dispatch-groups-windows-standalone:
-    name: ${{ matrix.name }}
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}${{ matrix.name }}
     if: >-
       ${{
         needs.build-workflow.outputs.matrix_enabled == 'true' &&
@@ -340,10 +350,11 @@ jobs:
         name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['windows_standalone']['keys'] }}
     uses: $/.github/workflows/workflow-dispatch-standalone-group-windows.yml
     with:
+      workflow_id: ${{ inputs.workflow_id }}
       job-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['windows_standalone']['jobs'][matrix.name]) }}
 
   verify-workflow:
-    name: Verify and summarize workflow results
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Verify and summarize workflow results
     if: >-
       ${{
         always() &&
@@ -371,11 +382,12 @@ jobs:
         id: check-workflow
         uses: $/.github/actions/workflow-results
         with:
+          workflow_id: ${{ inputs.workflow_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           pr_number: ${{ needs.build-workflow.outputs.pr_number }}
 
   verify-devcontainers:
-    name: Verify Dev Containers
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Verify Dev Containers
     needs: build-workflow
     if: ${{ needs.build-workflow.outputs.vdc_enabled == 'true' }}
     permissions:
@@ -386,7 +398,7 @@ jobs:
       base_sha: ${{ needs.build-workflow.outputs.base_sha }}
 
   docs-build:
-    name: Build documentation
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build documentation
     needs: build-workflow
     if: >-
       ${{
@@ -410,7 +422,7 @@ jobs:
           upload_workflow_artifact: "false"
 
   build-rapids:
-    name: Build RAPIDS (optional)
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build RAPIDS (optional)
     needs: build-workflow
     if: >-
       ${{
@@ -427,7 +439,7 @@ jobs:
     uses: $/.github/workflows/build-rapids.yml
 
   build-matx:
-    name: Build MatX (optional)
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build MatX (optional)
     needs: build-workflow
     if: >-
       ${{
@@ -441,7 +453,7 @@ jobs:
     uses: $/.github/workflows/build-matx.yml
 
   build-pytorch:
-    name: Build PyTorch (optional)
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build PyTorch (optional)
     needs: build-workflow
     if: >-
       ${{
@@ -456,7 +468,7 @@ jobs:
 
   # Test that cuda.compute can be imported on a CPU-only machine (no CUDA drivers).
   test-cpu-import:
-    name: Test CPU-only import
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Test CPU-only import
     runs-on: ubuntu-latest
     needs:
       - dispatch-groups-linux-two-stage
@@ -470,7 +482,7 @@ jobs:
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7
         continue-on-error: true
         with:
-          name: wheel-cccl-linux-amd64-py3.14
+          name: ${{ inputs.workflow_id && format('{0}-', inputs.workflow_id) || '' }}wheel-cccl-linux-amd64-py3.14
           path: artifact
 
       - name: Check if wheel exists
@@ -521,7 +533,7 @@ jobs:
           "
 
   dispatch-bench:
-    name: Bench Compare (${{ matrix.gpu }})
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Bench Compare (${{ matrix.gpu }})
     if: >-
       ${{
         needs.build-workflow.outputs.bench_enabled == 'true' &&
@@ -548,7 +560,7 @@ jobs:
       nvbench_compare_legacy_args: ${{ matrix.nvbench_compare_legacy_args }}
 
   dispatch-compile-time-bench:
-    name: Compile-time Bench (${{ matrix.id }})
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Compile-time Bench (${{ matrix.id }})
     # Compile-time benchmarks are informational PR telemetry. They are launched
     # by this CI workflow, but intentionally omitted from the aggregate `ci`
     # branch-protection job so benchmark regressions or script failures do not
@@ -569,7 +581,7 @@ jobs:
       matrix: ${{ fromJSON(needs.build-workflow.outputs.compile_time_matrix) }}
     uses: $/.github/workflows/compile-time-bench.yml
     with:
-      id: ${{ matrix.id }}
+      id: ${{ inputs.workflow_id && format('{0}-{1}', inputs.workflow_id, matrix.id) || matrix.id }}
       name: ${{ matrix.name }}
       gpu: ${{ matrix.gpu }}
       launch_args: ${{ matrix.launch_args }}
@@ -579,12 +591,12 @@ jobs:
       args: ${{ matrix.args }}
       slices_json: ${{ matrix.slices_json }}
       comment: ${{ matrix.comment }}
-      comment_header: ${{ matrix.comment_header }}
+      comment_header: ${{ inputs.workflow_id && format('{0}-{1}', inputs.workflow_id, matrix.comment_header) || matrix.comment_header }}
       artifact_retention_days: ${{ matrix.artifact_retention_days }}
       pr_number: ${{ needs.build-workflow.outputs.pr_number }}
 
   dispatch-sass-diff:
-    name: SASS Diff (${{ matrix.id }})
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}SASS Diff (${{ matrix.id }})
     # A SASS difference does not fail this job. Only an infrastructure or script failure
     # does, and that failure blocks the merge through the aggregate `ci` job.
     if: >-
@@ -602,7 +614,7 @@ jobs:
       matrix: ${{ fromJSON(needs.build-workflow.outputs.sass_matrix) }}
     uses: $/.github/workflows/sass-diff.yml
     with:
-      id: ${{ matrix.id }}
+      id: ${{ inputs.workflow_id && format('{0}-{1}', inputs.workflow_id, matrix.id) || matrix.id }}
       launch_args: ${{ matrix.launch_args }}
       preset: ${{ matrix.preset }}
       archs: ${{ matrix.archs }}
@@ -612,7 +624,7 @@ jobs:
       inference_api_key: ${{ secrets.NVINFERENCE_API_KEY }}
 
   bench-results:
-    name: Post benchmark results
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Post benchmark results
     if: >-
       ${{
         always() && !cancelled() &&
@@ -638,7 +650,7 @@ jobs:
         uses: marocchino/sticky-pull-request-comment@67d0dec7b07ed060a405f9b2a64b8ab319fdd7db  # v2.9.2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          header: bench-results
+          header: bench-results${{ inputs.workflow_id && format('-{0}', inputs.workflow_id) || '' }}
           number: ${{ needs.build-workflow.outputs.pr_number }}
           message: |
             ## ${{ steps.outcome.outputs.icon }} Benchmark Results
@@ -651,7 +663,7 @@ jobs:
           hide_classify: "OUTDATED"
 
   sass-results:
-    name: Post SASS comparison results
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Post SASS comparison results
     if: >-
       ${{
         needs.build-workflow.outputs.sass_enabled == 'true' &&
@@ -664,10 +676,17 @@ jobs:
     runs-on: ubuntu-slim
     steps:
       - name: Download the SASS comment artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: sass-*-comment
-          path: sass-comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SASS_MATRIX: ${{ needs.build-workflow.outputs.sass_matrix }}
+          WORKFLOW_ID: ${{ inputs.workflow_id }}
+        run: |
+          ids=$(jq -r '.include[].id' <<< "${SASS_MATRIX}")
+          while IFS= read -r id; do
+            artifact="sass-${WORKFLOW_ID:+${WORKFLOW_ID}-}${id}-comment"
+            gh run download "${GITHUB_RUN_ID}" --repo "${GITHUB_REPOSITORY}" \
+              --name "${artifact}" --dir "sass-comment/${artifact}"
+          done <<< "${ids}"
 
       - name: Determine the outcome
         id: compose
@@ -722,7 +741,7 @@ jobs:
         uses: marocchino/sticky-pull-request-comment@67d0dec7b07ed060a405f9b2a64b8ab319fdd7db  # v2.9.2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          header: sass-results
+          header: sass-results${{ inputs.workflow_id && format('-{0}', inputs.workflow_id) || '' }}
           number: ${{ needs.build-workflow.outputs.pr_number }}
           path: ${{ steps.compose.outputs.path }}
           hide_and_recreate: true
@@ -733,14 +752,14 @@ jobs:
         uses: marocchino/sticky-pull-request-comment@67d0dec7b07ed060a405f9b2a64b8ab319fdd7db  # v2.9.2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          header: sass-results
+          header: sass-results${{ inputs.workflow_id && format('-{0}', inputs.workflow_id) || '' }}
           number: ${{ needs.build-workflow.outputs.pr_number }}
           hide: true
           hide_classify: "OUTDATED"
 
   # Check all other job statuses. This job gates branch protection checks.
   ci:
-    name: CI
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}CI
     # !! Important: This job is used for branch protection checks.
     # !! Need to use always() instead of !cancelled() because skipped jobs count as success
     # !! for Github branch protection checks. Yes, really: by default, branch protections
@@ -828,7 +847,7 @@ jobs:
   # This analyzes the current run. Keep every job whose failures should be included in
   # this job's direct or transitive `needs` so log collection starts after they finish.
   analyze-failures:
-    name: Analyze CI failures
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Analyze CI failures
     if: >-
       ${{
         always() &&
@@ -909,7 +928,7 @@ jobs:
           cat "${SUMMARY_FILE}" >> "${GITHUB_STEP_SUMMARY}"
 
   publish-failure-analysis:
-    name: Add failure analysis to CI results
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Add failure analysis to CI results
     if: >-
       ${{
         always() &&
@@ -926,7 +945,7 @@ jobs:
         uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          header: ci-results
+          header: ci-results${{ inputs.workflow_id && format('-{0}', inputs.workflow_id) || '' }}
           number: ${{ needs.analyze-failures.outputs.pr_number }}
           message: ${{ needs.analyze-failures.outputs.github_comment }}
           append: true

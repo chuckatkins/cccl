@@ -38,12 +38,20 @@ Callable CI profiles and the matrix builder test the triggering commit in the
 caller repository. Matrix files also come from the caller repository, but their
 ref can be selected independently and defaults to the calling ref.
 
+When calling a CI implementation more than once in a run, use a different
+``workflow_id`` for each invocation. This scopes its artifacts, job timings,
+failure analysis, and PR comments. An empty identifier preserves the unscoped
+behavior of a single invocation.
+
 .. list-table::
    :header-rows: 1
    :widths: 25 75
 
    * - Input
      - Purpose
+   * - ``workflow_id``
+     - Identifier unique within the run. May contain letters, digits, dots,
+       hyphens, or underscores; defaults to empty for unscoped execution.
    * - ``matrix_ref``
      - Matrix branch, tag, or commit SHA.
    * - ``matrix_path``
@@ -61,10 +69,14 @@ For example, a caller can select a matrix from another ref:
       ci:
         uses: NVIDIA/cccl/.github/workflows/ci-workflow-nightly.yml@main
         permissions:
-          contents: read
           actions: read
+          checks: read
+          contents: read
           id-token: write
+          packages: read
+          pull-requests: read
         with:
+          workflow_id: nightly-ci-config
           matrix_ref: ci-config
           matrix_path: ci/matrix.yaml
 

@@ -25,10 +25,12 @@ def write_json(filepath, json_object):
         json.dump(json_object, f, indent=4)
 
 
-def generate_job_id_map(workflow):
+def generate_job_id_map(workflow, workflow_id=""):
     """Map full job name to job id"""
     job_id_map = {}
     for group_name, group_json in workflow.items():
+        if workflow_id:
+            group_name = f"{workflow_id} / {group_name}"
         standalone = group_json["standalone"] if "standalone" in group_json else []
         for job in standalone:
             name = f"{group_name} / {job['name']}"
@@ -59,13 +61,18 @@ def main():
     parser = argparse.ArgumentParser(description="Parse job times")
     parser.add_argument("workflow", type=str, help="Path to workflow.json")
     parser.add_argument("jobs", type=str, help="Path to jobs.json")
+    parser.add_argument(
+        "--workflow-id", default="", help="Invocation identifier used in job names"
+    )
     args = parser.parse_args()
 
     jobs = get_jobs_json(args.jobs)
     workflow = get_workflow_json(args.workflow)
+    if args.workflow_id:
+        jobs = [job for job in jobs if args.workflow_id in job["name"].split(" / ")]
 
     # GitHub prefixes job names with each reusable workflow caller's job name.
-    matrix_job_id_map = generate_job_id_map(workflow)
+    matrix_job_id_map = generate_job_id_map(workflow, args.workflow_id)
     job_id_map = {}
     for job in jobs:
         job_id = resolve_job_id(job["name"], matrix_job_id_map)

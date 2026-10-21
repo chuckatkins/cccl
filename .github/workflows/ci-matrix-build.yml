@@ -14,8 +14,7 @@
 # limitations under the License.
 
 # Reusable workflow that builds the CI matrix from ci/matrix.yaml and dispatches
-# all build/test job groups. Shared by the nightly and weekly scheduled workflows,
-# which only differ in the matrix `workflows` value and Slack alert preference.
+# all build/test job groups. Shared by the CI profiles and manual dispatcher.
 name: "CI/Matrix Build"
 
 defaults:
@@ -25,6 +24,12 @@ defaults:
 on:
   workflow_call:
     inputs:
+      workflow_id:
+        description: >-
+          Unique identifier for this invocation within a run. Use letters,
+          digits, dots, hyphens, or underscores; empty keeps unscoped artifacts.
+        type: string
+        default: ""
       matrix_ref:
         description: "Matrix branch, tag, or SHA. Defaults to the calling ref."
         type: string
@@ -37,6 +42,19 @@ on:
         description: "Space separated list of workflows in the matrix file to run (e.g. 'nightly' or 'weekly')."
         type: string
         required: true
+      allow_override:
+        description: "Allow an override matrix for this invocation."
+        type: boolean
+        default: false
+      inspect_changes_base_sha:
+        description: >-
+          Base commit for change detection. Empty runs the full selected matrix.
+        type: string
+        default: ""
+      pr_number:
+        description: "Pull request number for posting matrix results."
+        type: string
+        default: ""
       enable_slack_alert:
         description: "When true, also post failure notifications to the alert Slack channel (secrets.SLACK_CHANNEL_CI_ALERT) in addition to the log channel."
         type: boolean
@@ -59,7 +77,7 @@ on:
 jobs:
 
   build-workflow:
-    name: Build workflow from matrix
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build workflow from matrix
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -69,6 +87,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v6
         with:
+          fetch-depth: ${{ inputs.inspect_changes_base_sha != '' && '0' || '1' }}
           persist-credentials: false
       - name: Download matrix
         env:
@@ -86,14 +105,18 @@ jobs:
         id: build-workflow
         uses: $/.github/actions/workflow-build
         with:
+          workflow_id: ${{ inputs.workflow_id }}
           matrix_file: ${{ runner.temp }}/matrix.yaml
           workflows: ${{ inputs.workflows }}
+          allow_override: ${{ inputs.allow_override }}
+          inspect_changes_script: ${{ inputs.inspect_changes_base_sha != '' && 'ci/inspect_changes.py' || '' }}
+          inspect_changes_base_sha: ${{ inputs.inspect_changes_base_sha }}
           slack_token: ${{ secrets.SLACK_NOTIFIER_BOT_TOKEN }}
-          slack_log: ${{ secrets.SLACK_CHANNEL_CI_LOG }}
+          slack_log: ${{ inputs.pr_number == '' && secrets.SLACK_CHANNEL_CI_LOG || '' }}
           slack_alert: ${{ inputs.enable_slack_alert == true && secrets.SLACK_CHANNEL_CI_ALERT || '' }}
 
   dispatch-groups-linux-two-stage:
-    name: ${{ matrix.name }}
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}${{ matrix.name }}
     if: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['linux_two_stage']['keys']) != '[]' }}
     needs: build-workflow
     permissions:
@@ -105,10 +128,11 @@ jobs:
         name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['linux_two_stage']['keys'] }}
     uses: $/.github/workflows/workflow-dispatch-two-stage-group-linux.yml
     with:
+      workflow_id: ${{ inputs.workflow_id }}
       pc-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['linux_two_stage']['jobs'][matrix.name]) }}
 
   dispatch-groups-windows-two-stage:
-    name: ${{ matrix.name }}
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}${{ matrix.name }}
     if: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['windows_two_stage']['keys']) != '[]' }}
     needs: build-workflow
     permissions:
@@ -120,10 +144,11 @@ jobs:
         name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['windows_two_stage']['keys'] }}
     uses: $/.github/workflows/workflow-dispatch-two-stage-group-windows.yml
     with:
+      workflow_id: ${{ inputs.workflow_id }}
       pc-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['windows_two_stage']['jobs'][matrix.name]) }}
 
   dispatch-groups-linux-standalone:
-    name: ${{ matrix.name }}
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}${{ matrix.name }}
     if: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['linux_standalone']['keys']) != '[]' }}
     needs: build-workflow
     permissions:
@@ -135,10 +160,11 @@ jobs:
         name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['linux_standalone']['keys'] }}
     uses: $/.github/workflows/workflow-dispatch-standalone-group-linux.yml
     with:
+      workflow_id: ${{ inputs.workflow_id }}
       job-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['linux_standalone']['jobs'][matrix.name]) }}
 
   dispatch-groups-windows-standalone:
-    name: ${{ matrix.name }}
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}${{ matrix.name }}
     if: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['windows_standalone']['keys']) != '[]' }}
     needs: build-workflow
     permissions:
@@ -150,10 +176,77 @@ jobs:
         name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['windows_standalone']['keys'] }}
     uses: $/.github/workflows/workflow-dispatch-standalone-group-windows.yml
     with:
+      workflow_id: ${{ inputs.workflow_id }}
       job-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['windows_standalone']['jobs'][matrix.name]) }}
 
+  # Test that cuda.compute can be imported on a CPU-only machine (no CUDA drivers).
+  test-cpu-import:
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Test CPU-only import
+    runs-on: ubuntu-latest
+    needs:
+      - dispatch-groups-linux-two-stage
+      - dispatch-groups-linux-standalone
+    if: ${{ !cancelled() && inputs.pr_number != '' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Download wheel artifact
+        id: download
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7
+        continue-on-error: true
+        with:
+          name: ${{ inputs.workflow_id && format('{0}-', inputs.workflow_id) || '' }}wheel-cccl-linux-amd64-py3.14
+          path: artifact
+
+      - name: Check if wheel exists
+        id: check-wheel
+        run: |
+          if [[ "${{ steps.download.outcome }}" != "success" ]]; then
+            echo "No wheel artifact found (Python jobs likely didn't run). Skipping test."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Wheel artifact found."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.check-wheel.outputs.skip != 'true'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.14'
+
+      - name: Install wheel
+        if: steps.check-wheel.outputs.skip != 'true'
+        run: |
+          echo "Artifact contents:"
+          find artifact -name "*.whl" -type f
+          wheel=$(find artifact -name "*.whl" -type f | head -1)
+          pip install "${wheel}[cu13]"
+
+      - name: Test CPU-only import
+        if: steps.check-wheel.outputs.skip != 'true'
+        run: |
+          python -c "
+          import cuda.compute
+          print('cuda.compute imported successfully!')
+          print(f'_BINDINGS_AVAILABLE: {cuda.compute._BINDINGS_AVAILABLE}')
+
+          # Verify that accessing missing attributes gives a helpful error
+          try:
+              _ = cuda.compute.reduce_into
+              print('ERROR: Should have raised AttributeError')
+              exit(1)
+          except AttributeError as e:
+              print(f'Got expected AttributeError: {e}')
+              if 'CUDA bindings are not available' not in str(e):
+                  print('ERROR: AttributeError message is not helpful')
+                  exit(1)
+
+          print('All CPU-only import tests passed!')
+          "
+
   verify-workflow:
-    name: Verify and summarize workflow results
+    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Verify and summarize workflow results
     if: ${{ always() && !cancelled() }}
     needs:
       - build-workflow
@@ -161,9 +254,7 @@ jobs:
       - dispatch-groups-windows-two-stage
       - dispatch-groups-linux-standalone
       - dispatch-groups-windows-standalone
-    permissions:
-      actions: read
-      contents: read
+      - test-cpu-import
     runs-on: ubuntu-latest
     outputs:
       failure_message: ${{ steps.check-workflow.outputs.failure_message }}
@@ -177,7 +268,9 @@ jobs:
         id: check-workflow
         uses: $/.github/actions/workflow-results
         with:
+          workflow_id: ${{ inputs.workflow_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          pr_number: ${{ inputs.pr_number }}
           slack_token: ${{ secrets.SLACK_NOTIFIER_BOT_TOKEN }}
-          slack_log: ${{ secrets.SLACK_CHANNEL_CI_LOG }}
+          slack_log: ${{ inputs.pr_number == '' && secrets.SLACK_CHANNEL_CI_LOG || '' }}
           slack_alert: ${{ inputs.enable_slack_alert == true && secrets.SLACK_CHANNEL_CI_ALERT || '' }}
