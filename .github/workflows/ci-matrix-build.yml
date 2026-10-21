@@ -25,6 +25,14 @@ defaults:
 on:
   workflow_call:
     inputs:
+      matrix_ref:
+        description: "Matrix branch, tag, or SHA. Defaults to the calling ref."
+        type: string
+        default: ${{ github.ref }}
+      matrix_path:
+        description: "Path to the matrix file within the caller repository."
+        type: string
+        default: "ci/matrix.yaml"
       workflows:
         description: "Space separated list of workflows in the matrix file to run (e.g. 'nightly' or 'weekly')."
         type: string
@@ -33,10 +41,6 @@ on:
         description: "When true, also post failure notifications to the alert Slack channel (secrets.SLACK_CHANNEL_CI_ALERT) in addition to the log channel."
         type: boolean
         default: false
-      matrix_branch:
-        description: "Branch (in this repo) to checkout into '.private' so its matrix file can be sideloaded. When empty, no extra checkout is performed and 'matrix_file' is read from the current checkout."
-        type: string
-        default: ''
     outputs:
       failure_message:
         description: "Prepared workflow failure notification text, populated when verify-workflow detects failures."
@@ -66,22 +70,24 @@ jobs:
         uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - name: Checkout matrix branch into .private
-        if: ${{ inputs.matrix_branch != '' }}
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-          ref: ${{ inputs.matrix_branch }}
-          path: .private
+      - name: Download matrix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MATRIX_REF: ${{ inputs.matrix_ref }}
+          MATRIX_PATH: ${{ inputs.matrix_path }}
+        run: |
+          gh api \
+            --method GET \
+            --header 'Accept: application/vnd.github.raw+json' \
+            --raw-field "ref=${MATRIX_REF}" \
+            "repos/${GITHUB_REPOSITORY}/contents/${MATRIX_PATH}" \
+            > "${RUNNER_TEMP}/matrix.yaml"
       - name: Build workflow
         id: build-workflow
         uses: $/.github/actions/workflow-build
         with:
+          matrix_file: ${{ runner.temp }}/matrix.yaml
           workflows: ${{ inputs.workflows }}
-          # When sideloading from another branch, the matrix checkout is prefixed with
-          # '.private'. Otherwise use the path as-is from the current checkout
-          # (e.g. 'ci/matrix.yaml' for the default callers).
-          matrix_file: ${{ inputs.matrix_branch != '' && '.private/ci/matrix.yaml' || 'ci/matrix.yaml' }}
           slack_token: ${{ secrets.SLACK_NOTIFIER_BOT_TOKEN }}
           slack_log: ${{ secrets.SLACK_CHANNEL_CI_LOG }}
           slack_alert: ${{ inputs.enable_slack_alert == true && secrets.SLACK_CHANNEL_CI_ALERT || '' }}

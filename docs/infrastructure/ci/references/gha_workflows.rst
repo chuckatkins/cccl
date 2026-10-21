@@ -17,7 +17,7 @@ Reusable workflows
 ``ci-workflow-weekly.yml`` support ``workflow_call`` alongside their push,
 schedule, or manual triggers.
 ``ci-workflow-custom.yml`` provides manual dispatch of ``ci-matrix-build.yml``,
-passing its ``workflows`` and ``matrix_branch`` inputs. The ``workflows`` input
+passing its ``workflows`` and ``matrix_ref`` inputs. The ``workflows`` input
 defaults to ``nightly``. Other workflows call ``ci-matrix-build.yml`` directly.
 Nested workflow calls use ``$/.github/workflows/...``
 to reference implementations in the workflow's own repository and commit.
@@ -30,6 +30,43 @@ Callers must grant the token permissions needed by the called jobs.
 Pass any required secrets through an explicit secret mapping, or use
 ``secrets: inherit`` within the same organization or enterprise. CI profiles
 control concurrency for their runs.
+
+Matrix selection
+~~~~~~~~~~~~~~~~
+
+Callable CI profiles and the matrix builder test the triggering commit in the
+caller repository. Matrix files also come from the caller repository, but their
+ref can be selected independently and defaults to the calling ref.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Input
+     - Purpose
+   * - ``matrix_ref``
+     - Matrix branch, tag, or commit SHA.
+   * - ``matrix_path``
+     - Matrix file path relative to the repository root. Defaults to
+       ``ci/matrix.yaml``.
+
+Matrix-driven CI generates jobs from the selected matrix file and runs them
+against the triggering commit.
+
+For example, a caller can select a matrix from another ref:
+
+.. code-block:: yaml
+
+    jobs:
+      ci:
+        uses: NVIDIA/cccl/.github/workflows/ci-workflow-nightly.yml@main
+        permissions:
+          contents: read
+          actions: read
+          id-token: write
+        with:
+          matrix_ref: ci-config
+          matrix_path: ci/matrix.yaml
 
 Source and matrix access, run artifacts, and pull request comments use the
 caller's ``GITHUB_TOKEN``.

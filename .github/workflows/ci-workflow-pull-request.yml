@@ -25,6 +25,15 @@ on:
     branches:
       - "pull-request/[0-9]+"
   workflow_call:
+    inputs:
+      matrix_ref:
+        description: "Matrix branch, tag, or SHA. Defaults to the calling ref."
+        type: string
+        default: ${{ github.ref }}
+      matrix_path:
+        description: "Path to the matrix file within the caller repository."
+        type: string
+        default: "ci/matrix.yaml"
     secrets:
       NVINFERENCE_API_KEY:
         description: NVIDIA Inference Hub API key for CI failure analysis and SASS triage.
@@ -40,7 +49,7 @@ on:
         required: false
 
 concurrency:
-  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}-pull-request
+  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}-pull-request-${{ inputs.matrix_ref }}-${{ inputs.matrix_path }}
   cancel-in-progress: true
 
 jobs:
@@ -50,6 +59,9 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+    env:
+      MATRIX_REF: ${{ inputs.matrix_ref || github.ref }}
+      MATRIX_PATH: ${{ inputs.matrix_path || 'ci/matrix.yaml' }}
     outputs:
       base_sha: ${{ steps.export-pr-info.outputs.base_sha }}
       merge_base_sha: ${{ steps.export-pr-info.outputs.merge_base_sha }}
@@ -88,6 +100,16 @@ jobs:
           # `git merge-base` below needs the history of both sides.
           fetch-depth: 0
           persist-credentials: false
+      - name: Download matrix
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api \
+            --method GET \
+            --header 'Accept: application/vnd.github.raw+json' \
+            --raw-field "ref=${MATRIX_REF}" \
+            "repos/${GITHUB_REPOSITORY}/contents/${MATRIX_PATH}" \
+            > "${RUNNER_TEMP}/matrix.yaml"
       - name: Lookup PR info
         id: get-pr-info
         uses: nv-gha-runners/get-pr-info@main
@@ -122,6 +144,8 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
       - name: Build compile-time benchmark dispatch matrix
         id: build-compile-time-matrix
+        env:
+          MATRIX_FILE: ${{ runner.temp }}/matrix.yaml
         run: |
           if [[ "${{ contains(github.event.head_commit.message, '[skip-compile-time-bench]') }}" == "true" ]]; then
             echo "Commit message contains [skip-compile-time-bench]; skipping compile-time benchmark dispatch."
@@ -132,7 +156,7 @@ jobs:
             exit 0
           fi
 
-          compile_time_matrix_json="$(./ci/compile_time/parse_matrix.py "ci/matrix.yaml" --workflow pull_request)"
+          compile_time_matrix_json="$(./ci/compile_time/parse_matrix.py "${MATRIX_FILE}" --workflow pull_request)"
           compile_time_enabled="$(
             jq -r 'if (.include // []) == [] then "false" else "true" end' \
               <<< "${compile_time_matrix_json}"
@@ -145,6 +169,7 @@ jobs:
       - name: Build SASS diff dispatch matrix
         id: build-sass-matrix
         env:
+          MATRIX_FILE: ${{ runner.temp }}/matrix.yaml
           BASE_SHA: ${{ steps.export-pr-info.outputs.base_sha }}
         run: |
           set -u
@@ -184,7 +209,7 @@ jobs:
             exit 0
           fi
 
-          sass_matrix_json="$(./ci/sass/parse_matrix.py "ci/matrix.yaml" --workflow pull_request)"
+          sass_matrix_json="$(./ci/sass/parse_matrix.py "${MATRIX_FILE}" --workflow pull_request)"
           sass_enabled="$(
             jq -r 'if (.include // []) == [] then "false" else "true" end' \
               <<< "${sass_matrix_json}"
@@ -228,6 +253,7 @@ jobs:
         id: build-workflow
         uses: $/.github/actions/workflow-build
         with:
+          matrix_file: ${{ runner.temp }}/matrix.yaml
           github_token: ${{ secrets.GITHUB_TOKEN }}
           pr_number: ${{ steps.export-pr-info.outputs.pr_number }}
           allow_override: "true"
