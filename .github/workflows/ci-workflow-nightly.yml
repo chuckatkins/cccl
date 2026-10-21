@@ -24,24 +24,23 @@ defaults:
 
 on:
   workflow_dispatch:
+    inputs: &input_args
+      matrix_ref:
+        description: >-
+          Matrix branch, tag, or SHA. Set either matrix input to override
+          CI_MATRICES; empty uses the triggering ref.
+        type: string
+        default: ""
+      matrix_path:
+        description: >-
+          Matrix path relative to the repository root. Empty defaults to
+          ci/matrix.yaml when overriding CI_MATRICES.
+        type: string
+        default: ""
   schedule:
     - cron: '0 3 * * 1-5' # 3AM UTC, 11PM EST, 8PM PST, Mon-Fri
   workflow_call:
-    inputs:
-      workflow_id:
-        description: >-
-          Unique identifier for this invocation within a run. Use letters,
-          digits, dots, hyphens, or underscores; empty keeps unscoped artifacts.
-        type: string
-        default: ""
-      matrix_ref:
-        description: "Matrix branch, tag, or SHA. Defaults to the calling ref."
-        type: string
-        default: ${{ github.ref }}
-      matrix_path:
-        description: "Path to the matrix file within the caller repository."
-        type: string
-        default: "ci/matrix.yaml"
+    inputs: *input_args
     secrets:
       NVINFERENCE_API_KEY:
         description: NVIDIA Inference Hub API key for CI failure analysis and SASS triage.
@@ -60,22 +59,43 @@ on:
         required: false
 
 concurrency:
-  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}-nightly-${{ inputs.workflow_id }}-${{ inputs.matrix_ref }}-${{ inputs.matrix_path }}
+  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}-nightly-${{ inputs.matrix_ref }}-${{ inputs.matrix_path }}
 
 jobs:
 
+  select-matrices:
+    name: Select CI matrices
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrices.outputs.matrix }}
+    steps:
+      - name: Read CI matrices
+        id: matrices
+        uses: $/.github/actions/parse-ci-matrices
+        with:
+          workflow: nightly
+          matrices: ${{ vars.CI_MATRICES }}
+          matrix_ref: ${{ inputs.matrix_ref }}
+          matrix_path: ${{ inputs.matrix_path }}
+
   matrix-build:
-    name: Build & dispatch CI matrix
+    name: ${{ matrix.name }}
+    needs: select-matrices
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select-matrices.outputs.matrix) }}
     uses: $/.github/workflows/ci-matrix-build.yml
     secrets: inherit
     with:
-      workflow_id: ${{ inputs.workflow_id }}
+      workflow_id: nightly-${{ matrix.name }}
       workflows: nightly
-      matrix_ref: ${{ inputs.matrix_ref || github.ref }}
-      matrix_path: ${{ inputs.matrix_path || 'ci/matrix.yaml' }}
+      matrix_ref: ${{ matrix.matrix_ref }}
+      matrix_path: ${{ matrix.matrix_path }}
 
   build-rapids:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build RAPIDS
+    name: Build RAPIDS
     if: ${{ contains(fromJSON('["NVIDIA", "NVIDIA-dev"]'), github.repository_owner) }}
     secrets: inherit
     permissions:
@@ -89,7 +109,7 @@ jobs:
       enable_slack_alerts: true
 
   build-matx:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build MatX
+    name: Build MatX
     if: ${{ contains(fromJSON('["NVIDIA", "NVIDIA-dev"]'), github.repository_owner) }}
     secrets: inherit
     permissions:
@@ -100,7 +120,7 @@ jobs:
       enable_slack_alerts: true
 
   build-pytorch:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build PyTorch
+    name: Build PyTorch
     if: ${{ contains(fromJSON('["NVIDIA", "NVIDIA-dev"]'), github.repository_owner) }}
     secrets: inherit
     permissions:
@@ -111,7 +131,7 @@ jobs:
       enable_slack_alerts: true
 
   analyze-failures:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Analyze nightly failures
+    name: Analyze nightly failures
     if: >-
       ${{
         always() &&
@@ -120,6 +140,7 @@ jobs:
         github.ref_type == 'branch' &&
         github.ref_name == github.event.repository.default_branch &&
         (
+          needs.select-matrices.result == 'failure' ||
           needs.matrix-build.result == 'failure' ||
           needs.build-rapids.result == 'failure' ||
           needs.build-matx.result == 'failure' ||
@@ -127,6 +148,7 @@ jobs:
         )
       }}
     needs:
+      - select-matrices
       - matrix-build
       - build-rapids
       - build-matx
@@ -177,7 +199,7 @@ jobs:
           format: slack
 
   publish-failure-notification:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Post nightly failure notification to Slack
+    name: Post nightly failure notification to Slack
     if: >-
       ${{
         always() &&
@@ -186,12 +208,14 @@ jobs:
         github.ref_type == 'branch' &&
         github.ref_name == github.event.repository.default_branch &&
         (
-          needs.matrix-build.outputs.failure_message != '' ||
+          needs.select-matrices.result == 'failure' ||
+          needs.matrix-build.result == 'failure' ||
           needs.analyze-failures.outputs.slack_thread != ''
         )
       }}
     needs:
       - analyze-failures
+      - select-matrices
       - matrix-build
     permissions:
       contents: read
@@ -209,7 +233,12 @@ jobs:
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_NOTIFIER_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_CI_ALERT }}
-          SLACK_PARENT_TEXT: ${{ needs.matrix-build.outputs.failure_message }}
+          SLACK_PARENT_TEXT: >-
+            ${{ (needs.select-matrices.result == 'failure' ||
+                 needs.matrix-build.result == 'failure') &&
+                format('Workflow {0} has failed. Details: {1}/{2}/actions/runs/{3}',
+                       github.workflow, github.server_url, github.repository,
+                       github.run_id) || '' }}
           SLACK_THREAD: ${{ needs.analyze-failures.outputs.slack_thread }}
         shell: bash --noprofile --norc -euo pipefail {0}
         run: |

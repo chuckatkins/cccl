@@ -26,20 +26,18 @@ on:
       - "pull-request/[0-9]+"
   workflow_call:
     inputs:
-      workflow_id:
+      matrix_ref:
         description: >-
-          Unique identifier for this invocation within a run. Use letters,
-          digits, dots, hyphens, or underscores; empty keeps unscoped artifacts.
+          Matrix branch, tag, or SHA. Set either matrix input to override
+          CI_MATRICES; empty uses the triggering ref.
         type: string
         default: ""
-      matrix_ref:
-        description: "Matrix branch, tag, or SHA. Defaults to the calling ref."
-        type: string
-        default: ${{ github.ref }}
       matrix_path:
-        description: "Path to the matrix file within the caller repository."
+        description: >-
+          Matrix path relative to the repository root. Empty defaults to
+          ci/matrix.yaml when overriding CI_MATRICES.
         type: string
-        default: "ci/matrix.yaml"
+        default: ""
     secrets:
       NVINFERENCE_API_KEY:
         description: NVIDIA Inference Hub API key for CI failure analysis and SASS triage.
@@ -55,24 +53,23 @@ on:
         required: false
 
 concurrency:
-  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}-pull-request-${{ inputs.workflow_id }}-${{ inputs.matrix_ref }}-${{ inputs.matrix_path }}
+  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}-pull-request-${{ inputs.matrix_ref }}-${{ inputs.matrix_path }}
   cancel-in-progress: true
 
 jobs:
   build-workflow:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build workflow from matrix
+    name: Prepare CI workflow
+    needs: select-matrices
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
     env:
-      MATRIX_REF: ${{ inputs.matrix_ref || github.ref }}
-      MATRIX_PATH: ${{ inputs.matrix_path || 'ci/matrix.yaml' }}
+      MATRICES: ${{ needs.select-matrices.outputs.matrix }}
     outputs:
       base_sha: ${{ steps.export-pr-info.outputs.base_sha }}
       merge_base_sha: ${{ steps.export-pr-info.outputs.merge_base_sha }}
       pr_number: ${{ steps.export-pr-info.outputs.pr_number }}
-      workflow: ${{ steps.build-workflow.outputs.workflow }}
       matrix_enabled: ${{ steps.export-flags.outputs.matrix_enabled }}
       bench_enabled: ${{ steps.build-bench-matrix.outputs.bench_enabled }}
       bench_matrix: ${{ steps.build-bench-matrix.outputs.bench_matrix }}
@@ -106,16 +103,22 @@ jobs:
           # `git merge-base` below needs the history of both sides.
           fetch-depth: 0
           persist-credentials: false
-      - name: Download matrix
+      - name: Download matrices
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api \
-            --method GET \
-            --header 'Accept: application/vnd.github.raw+json' \
-            --raw-field "ref=${MATRIX_REF}" \
-            "repos/${GITHUB_REPOSITORY}/contents/${MATRIX_PATH}" \
-            > "${RUNNER_TEMP}/matrix.yaml"
+          mkdir -p "${RUNNER_TEMP}/matrices"
+          while IFS= read -r selector; do
+            name=$(jq -r '.name' <<< "${selector}")
+            matrix_ref=$(jq -r '.matrix_ref' <<< "${selector}")
+            matrix_path=$(jq -r '.matrix_path' <<< "${selector}")
+            gh api \
+              --method GET \
+              --header 'Accept: application/vnd.github.raw+json' \
+              --raw-field "ref=${matrix_ref}" \
+              "repos/${GITHUB_REPOSITORY}/contents/${matrix_path}" \
+              > "${RUNNER_TEMP}/matrices/${name}.yaml"
+          done < <(jq -c '.include[]' <<< "${MATRICES}")
       - name: Lookup PR info
         id: get-pr-info
         uses: nv-gha-runners/get-pr-info@main
@@ -150,8 +153,6 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
       - name: Build compile-time benchmark dispatch matrix
         id: build-compile-time-matrix
-        env:
-          MATRIX_FILE: ${{ runner.temp }}/matrix.yaml
         run: |
           if [[ "${{ contains(github.event.head_commit.message, '[skip-compile-time-bench]') }}" == "true" ]]; then
             echo "Commit message contains [skip-compile-time-bench]; skipping compile-time benchmark dispatch."
@@ -162,7 +163,18 @@ jobs:
             exit 0
           fi
 
-          compile_time_matrix_json="$(./ci/compile_time/parse_matrix.py "${MATRIX_FILE}" --workflow pull_request)"
+          compile_time_matrix_json='{"include":[]}'
+          while IFS= read -r name; do
+            current=$(./ci/compile_time/parse_matrix.py "${RUNNER_TEMP}/matrices/${name}.yaml" --workflow pull_request)
+            compile_time_matrix_json=$(jq -cn \
+              --argjson combined "${compile_time_matrix_json}" \
+              --argjson current "${current}" \
+              --arg workflow_id "pull-request-${name}" \
+              '$combined | .include += ($current.include | map(
+                .id = $workflow_id + "-" + .id |
+                .comment_header = $workflow_id + "-" + .comment_header
+              ))')
+          done < <(jq -r '.include[].name' <<< "${MATRICES}")
           compile_time_enabled="$(
             jq -r 'if (.include // []) == [] then "false" else "true" end' \
               <<< "${compile_time_matrix_json}"
@@ -175,7 +187,6 @@ jobs:
       - name: Build SASS diff dispatch matrix
         id: build-sass-matrix
         env:
-          MATRIX_FILE: ${{ runner.temp }}/matrix.yaml
           BASE_SHA: ${{ steps.export-pr-info.outputs.base_sha }}
         run: |
           set -u
@@ -192,8 +203,7 @@ jobs:
           # Only compare SASS when CUB, or something CUB is built from, changed.
           #
           # Redirect GITHUB_OUTPUT to our file so that the outputs do not land in this
-          # step's outputs, where they would collide with the ones `build-workflow` writes
-          # later.
+          # step's outputs, which are reserved for the SASS dispatch matrix.
           echo "::group::Inspect changes for CUB"
 
           dirty_report="${RUNNER_TEMP}/sass-inspect-changes.txt"
@@ -215,7 +225,17 @@ jobs:
             exit 0
           fi
 
-          sass_matrix_json="$(./ci/sass/parse_matrix.py "${MATRIX_FILE}" --workflow pull_request)"
+          sass_matrix_json='{"include":[]}'
+          while IFS= read -r name; do
+            current=$(./ci/sass/parse_matrix.py "${RUNNER_TEMP}/matrices/${name}.yaml" --workflow pull_request)
+            sass_matrix_json=$(jq -cn \
+              --argjson combined "${sass_matrix_json}" \
+              --argjson current "${current}" \
+              --arg workflow_id "pull-request-${name}" \
+              '$combined | .include += ($current.include | map(
+                .id = $workflow_id + "-" + .id
+              ))')
+          done < <(jq -r '.include[].name' <<< "${MATRICES}")
           sass_enabled="$(
             jq -r 'if (.include // []) == [] then "false" else "true" end' \
               <<< "${sass_matrix_json}"
@@ -253,141 +273,54 @@ jobs:
             echo "${branch_notes_dirt}"
             echo "EOF"
           } >> "${GITHUB_OUTPUT}"
-      - name: Build workflow
-        # Skip building the matrix when disabled, but still gather PR info for downstream jobs
-        if: steps.export-flags.outputs.matrix_enabled == 'true'
-        id: build-workflow
-        uses: $/.github/actions/workflow-build
+
+  select-matrices:
+    name: Select CI matrices
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrices.outputs.matrix }}
+    steps:
+      - name: Read CI matrices
+        id: matrices
+        uses: $/.github/actions/parse-ci-matrices
         with:
-          workflow_id: ${{ inputs.workflow_id }}
-          matrix_file: ${{ runner.temp }}/matrix.yaml
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          pr_number: ${{ steps.export-pr-info.outputs.pr_number }}
-          allow_override: "true"
-          inspect_changes_script: 'ci/inspect_changes.py'
-          inspect_changes_base_sha: ${{ steps.export-pr-info.outputs.base_sha }}
-          workflows: |-
-            ${{ case(
-              github.event.repository.fork, 'pull_request_fork',
-              contains(fromJSON('["NVIDIA", "NVIDIA-dev"]'), github.repository_owner), 'pull_request',
-              'pull_request_fork'
-            ) }}
+          workflow: pull_request
+          matrices: ${{ vars.CI_MATRICES }}
+          matrix_ref: ${{ inputs.matrix_ref }}
+          matrix_path: ${{ inputs.matrix_path }}
 
-  dispatch-groups-linux-two-stage:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}${{ matrix.name }}
-    if: >-
-      ${{
-        needs.build-workflow.outputs.matrix_enabled == 'true' &&
-        toJSON(fromJSON(needs.build-workflow.outputs.workflow)['linux_two_stage']['keys']) != '[]'
-      }}
-    needs: build-workflow
-    permissions:
-      id-token: write
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['linux_two_stage']['keys'] }}
-    uses: $/.github/workflows/workflow-dispatch-two-stage-group-linux.yml
-    with:
-      workflow_id: ${{ inputs.workflow_id }}
-      pc-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['linux_two_stage']['jobs'][matrix.name]) }}
-
-  dispatch-groups-windows-two-stage:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}${{ matrix.name }}
-    if: >-
-      ${{
-        needs.build-workflow.outputs.matrix_enabled == 'true' &&
-        toJSON(fromJSON(needs.build-workflow.outputs.workflow)['windows_two_stage']['keys']) != '[]'
-      }}
-    needs: build-workflow
-    permissions:
-      id-token: write
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['windows_two_stage']['keys'] }}
-    uses: $/.github/workflows/workflow-dispatch-two-stage-group-windows.yml
-    with:
-      workflow_id: ${{ inputs.workflow_id }}
-      pc-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['windows_two_stage']['jobs'][matrix.name]) }}
-
-  dispatch-groups-linux-standalone:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}${{ matrix.name }}
-    if: >-
-      ${{
-        needs.build-workflow.outputs.matrix_enabled == 'true' &&
-        toJSON(fromJSON(needs.build-workflow.outputs.workflow)['linux_standalone']['keys']) != '[]'
-      }}
-    needs: build-workflow
-    permissions:
-      id-token: write
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['linux_standalone']['keys'] }}
-    uses: $/.github/workflows/workflow-dispatch-standalone-group-linux.yml
-    with:
-      workflow_id: ${{ inputs.workflow_id }}
-      job-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['linux_standalone']['jobs'][matrix.name]) }}
-
-  dispatch-groups-windows-standalone:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}${{ matrix.name }}
-    if: >-
-      ${{
-        needs.build-workflow.outputs.matrix_enabled == 'true' &&
-        toJSON(fromJSON(needs.build-workflow.outputs.workflow)['windows_standalone']['keys']) != '[]'
-      }}
-    needs: build-workflow
-    permissions:
-      id-token: write
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['windows_standalone']['keys'] }}
-    uses: $/.github/workflows/workflow-dispatch-standalone-group-windows.yml
-    with:
-      workflow_id: ${{ inputs.workflow_id }}
-      job-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['windows_standalone']['jobs'][matrix.name]) }}
-
-  verify-workflow:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Verify and summarize workflow results
-    if: >-
-      ${{
-        always() &&
-        !cancelled() &&
-        needs.build-workflow.outputs.matrix_enabled == 'true'
-      }}
-    needs:
-      - build-workflow
-      - dispatch-groups-linux-two-stage
-      - dispatch-groups-windows-two-stage
-      - dispatch-groups-linux-standalone
-      - dispatch-groups-windows-standalone
+  matrix-build:
+    name: ${{ matrix.name }}
+    if: ${{ needs.build-workflow.outputs.matrix_enabled == 'true' }}
+    needs: [select-matrices, build-workflow]
     permissions:
       actions: read
       contents: read
-      pull-requests: write # Posts a comment back to the PR.
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Check workflow success
-        id: check-workflow
-        uses: $/.github/actions/workflow-results
-        with:
-          workflow_id: ${{ inputs.workflow_id }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          pr_number: ${{ needs.build-workflow.outputs.pr_number }}
+      id-token: write
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select-matrices.outputs.matrix) }}
+    uses: $/.github/workflows/ci-matrix-build.yml
+    secrets: inherit
+    with:
+      workflow_id: pull-request-${{ matrix.name }}
+      workflows: |-
+        ${{ case(
+          github.event.repository.fork, 'pull_request_fork',
+          contains(fromJSON('["NVIDIA", "NVIDIA-dev"]'), github.repository_owner), 'pull_request',
+          'pull_request_fork'
+        ) }}
+      matrix_ref: ${{ matrix.matrix_ref }}
+      matrix_path: ${{ matrix.matrix_path }}
+      allow_override: true
+      inspect_changes_base_sha: ${{ needs.build-workflow.outputs.base_sha }}
+      pr_number: ${{ needs.build-workflow.outputs.pr_number }}
 
   verify-devcontainers:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Verify Dev Containers
+    name: Verify Dev Containers
     needs: build-workflow
     if: ${{ needs.build-workflow.outputs.vdc_enabled == 'true' }}
     permissions:
@@ -398,7 +331,7 @@ jobs:
       base_sha: ${{ needs.build-workflow.outputs.base_sha }}
 
   docs-build:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build documentation
+    name: Build documentation
     needs: build-workflow
     if: >-
       ${{
@@ -422,7 +355,7 @@ jobs:
           upload_workflow_artifact: "false"
 
   build-rapids:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build RAPIDS (optional)
+    name: Build RAPIDS (optional)
     needs: build-workflow
     if: >-
       ${{
@@ -439,7 +372,7 @@ jobs:
     uses: $/.github/workflows/build-rapids.yml
 
   build-matx:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build MatX (optional)
+    name: Build MatX (optional)
     needs: build-workflow
     if: >-
       ${{
@@ -453,7 +386,7 @@ jobs:
     uses: $/.github/workflows/build-matx.yml
 
   build-pytorch:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Build PyTorch (optional)
+    name: Build PyTorch (optional)
     needs: build-workflow
     if: >-
       ${{
@@ -466,74 +399,8 @@ jobs:
       contents: read
     uses: $/.github/workflows/build-pytorch.yml
 
-  # Test that cuda.compute can be imported on a CPU-only machine (no CUDA drivers).
-  test-cpu-import:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Test CPU-only import
-    runs-on: ubuntu-latest
-    needs:
-      - dispatch-groups-linux-two-stage
-      - dispatch-groups-linux-standalone
-    if: ${{ !cancelled() }}
-    permissions:
-      contents: read
-    steps:
-      - name: Download wheel artifact
-        id: download
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7
-        continue-on-error: true
-        with:
-          name: ${{ inputs.workflow_id && format('{0}-', inputs.workflow_id) || '' }}wheel-cccl-linux-amd64-py3.14
-          path: artifact
-
-      - name: Check if wheel exists
-        id: check-wheel
-        run: |
-          if [[ "${{ steps.download.outcome }}" != "success" ]]; then
-            echo "No wheel artifact found (Python jobs likely didn't run). Skipping test."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Wheel artifact found."
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Set up Python
-        if: steps.check-wheel.outputs.skip != 'true'
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
-        with:
-          python-version: '3.14'
-
-      - name: Install wheel
-        if: steps.check-wheel.outputs.skip != 'true'
-        run: |
-          echo "Artifact contents:"
-          find artifact -name "*.whl" -type f
-          wheel=$(find artifact -name "*.whl" -type f | head -1)
-          pip install "${wheel}[cu13]"
-
-      - name: Test CPU-only import
-        if: steps.check-wheel.outputs.skip != 'true'
-        run: |
-          python -c "
-          import cuda.compute
-          print('cuda.compute imported successfully!')
-          print(f'_BINDINGS_AVAILABLE: {cuda.compute._BINDINGS_AVAILABLE}')
-
-          # Verify that accessing missing attributes gives a helpful error
-          try:
-              _ = cuda.compute.reduce_into
-              print('ERROR: Should have raised AttributeError')
-              exit(1)
-          except AttributeError as e:
-              print(f'Got expected AttributeError: {e}')
-              if 'CUDA bindings are not available' not in str(e):
-                  print('ERROR: AttributeError message is not helpful')
-                  exit(1)
-
-          print('All CPU-only import tests passed!')
-          "
-
   dispatch-bench:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Bench Compare (${{ matrix.gpu }})
+    name: Bench Compare (${{ matrix.gpu }})
     if: >-
       ${{
         needs.build-workflow.outputs.bench_enabled == 'true' &&
@@ -560,7 +427,7 @@ jobs:
       nvbench_compare_legacy_args: ${{ matrix.nvbench_compare_legacy_args }}
 
   dispatch-compile-time-bench:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Compile-time Bench (${{ matrix.id }})
+    name: Compile-time Bench (${{ matrix.id }})
     # Compile-time benchmarks are informational PR telemetry. They are launched
     # by this CI workflow, but intentionally omitted from the aggregate `ci`
     # branch-protection job so benchmark regressions or script failures do not
@@ -581,7 +448,7 @@ jobs:
       matrix: ${{ fromJSON(needs.build-workflow.outputs.compile_time_matrix) }}
     uses: $/.github/workflows/compile-time-bench.yml
     with:
-      id: ${{ inputs.workflow_id && format('{0}-{1}', inputs.workflow_id, matrix.id) || matrix.id }}
+      id: ${{ matrix.id }}
       name: ${{ matrix.name }}
       gpu: ${{ matrix.gpu }}
       launch_args: ${{ matrix.launch_args }}
@@ -591,12 +458,12 @@ jobs:
       args: ${{ matrix.args }}
       slices_json: ${{ matrix.slices_json }}
       comment: ${{ matrix.comment }}
-      comment_header: ${{ inputs.workflow_id && format('{0}-{1}', inputs.workflow_id, matrix.comment_header) || matrix.comment_header }}
+      comment_header: ${{ matrix.comment_header }}
       artifact_retention_days: ${{ matrix.artifact_retention_days }}
       pr_number: ${{ needs.build-workflow.outputs.pr_number }}
 
   dispatch-sass-diff:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}SASS Diff (${{ matrix.id }})
+    name: SASS Diff (${{ matrix.id }})
     # A SASS difference does not fail this job. Only an infrastructure or script failure
     # does, and that failure blocks the merge through the aggregate `ci` job.
     if: >-
@@ -614,7 +481,7 @@ jobs:
       matrix: ${{ fromJSON(needs.build-workflow.outputs.sass_matrix) }}
     uses: $/.github/workflows/sass-diff.yml
     with:
-      id: ${{ inputs.workflow_id && format('{0}-{1}', inputs.workflow_id, matrix.id) || matrix.id }}
+      id: ${{ matrix.id }}
       launch_args: ${{ matrix.launch_args }}
       preset: ${{ matrix.preset }}
       archs: ${{ matrix.archs }}
@@ -624,7 +491,7 @@ jobs:
       inference_api_key: ${{ secrets.NVINFERENCE_API_KEY }}
 
   bench-results:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Post benchmark results
+    name: Post benchmark results
     if: >-
       ${{
         always() && !cancelled() &&
@@ -650,7 +517,7 @@ jobs:
         uses: marocchino/sticky-pull-request-comment@67d0dec7b07ed060a405f9b2a64b8ab319fdd7db  # v2.9.2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          header: bench-results${{ inputs.workflow_id && format('-{0}', inputs.workflow_id) || '' }}
+          header: bench-results
           number: ${{ needs.build-workflow.outputs.pr_number }}
           message: |
             ## ${{ steps.outcome.outputs.icon }} Benchmark Results
@@ -663,7 +530,7 @@ jobs:
           hide_classify: "OUTDATED"
 
   sass-results:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Post SASS comparison results
+    name: Post SASS comparison results
     if: >-
       ${{
         needs.build-workflow.outputs.sass_enabled == 'true' &&
@@ -679,11 +546,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SASS_MATRIX: ${{ needs.build-workflow.outputs.sass_matrix }}
-          WORKFLOW_ID: ${{ inputs.workflow_id }}
         run: |
           ids=$(jq -r '.include[].id' <<< "${SASS_MATRIX}")
           while IFS= read -r id; do
-            artifact="sass-${WORKFLOW_ID:+${WORKFLOW_ID}-}${id}-comment"
+            artifact="sass-${id}-comment"
             gh run download "${GITHUB_RUN_ID}" --repo "${GITHUB_REPOSITORY}" \
               --name "${artifact}" --dir "sass-comment/${artifact}"
           done <<< "${ids}"
@@ -691,20 +557,8 @@ jobs:
       - name: Determine the outcome
         id: compose
         run: |
-          # The sass-diff job is a matrix job (presumably to organize it into a drop-down
-          # in the UI). download-artifact will put each sub-job into a separate directory
-          # under sass-comment, keyed by the job ID:
-          #
-          # sass-comment/
-          #   1/
-          #     summary.md
-          #   2/
-          #     summary.md
-          #   ...
-          #
-          # But there is currently only ever 1 job for it that runs, so we could remove
-          # the matrix handling code for it. Then this just becomes a bunch of
-          # straight-line code without the for-loop or the find call below.
+          # Each selected configuration has its own artifact directory.
+          # Combine summaries so the PR receives one SASS results comment.
           mapfile -t entries < <(find sass-comment -mindepth 1 -maxdepth 1 -type d | sort)
 
           if [[ "${#entries[@]}" -eq 0 ]]; then
@@ -741,7 +595,7 @@ jobs:
         uses: marocchino/sticky-pull-request-comment@67d0dec7b07ed060a405f9b2a64b8ab319fdd7db  # v2.9.2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          header: sass-results${{ inputs.workflow_id && format('-{0}', inputs.workflow_id) || '' }}
+          header: sass-results
           number: ${{ needs.build-workflow.outputs.pr_number }}
           path: ${{ steps.compose.outputs.path }}
           hide_and_recreate: true
@@ -752,14 +606,14 @@ jobs:
         uses: marocchino/sticky-pull-request-comment@67d0dec7b07ed060a405f9b2a64b8ab319fdd7db  # v2.9.2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          header: sass-results${{ inputs.workflow_id && format('-{0}', inputs.workflow_id) || '' }}
+          header: sass-results
           number: ${{ needs.build-workflow.outputs.pr_number }}
           hide: true
           hide_classify: "OUTDATED"
 
   # Check all other job statuses. This job gates branch protection checks.
   ci:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}CI
+    name: CI
     # !! Important: This job is used for branch protection checks.
     # !! Need to use always() instead of !cancelled() because skipped jobs count as success
     # !! for Github branch protection checks. Yes, really: by default, branch protections
@@ -767,10 +621,9 @@ jobs:
     if: ${{ always() }}
     needs:
       - build-workflow
-      - verify-workflow
+      - matrix-build
       - verify-devcontainers
       - docs-build
-      - test-cpu-import
       - dispatch-bench
       - dispatch-sass-diff
       - sass-results
@@ -793,10 +646,9 @@ jobs:
             fi
           }
 
-          check_result "verify-workflow"      "success" "${{needs.verify-workflow.result}}"
+          check_result "matrix-build"         "success" "${{needs.matrix-build.result}}"
           check_result "verify-devcontainers" "success" "${{needs.verify-devcontainers.result}}"
           check_result "docs-build"           "success" "${{needs.docs-build.result}}"
-          check_result "test-cpu-import"      "success" "${{needs.test-cpu-import.result}}"
 
           expected_bench_result="skipped"
           if [[ "${{ needs.build-workflow.outputs.bench_enabled }}" == "true" ]] \
@@ -847,7 +699,7 @@ jobs:
   # This analyzes the current run. Keep every job whose failures should be included in
   # this job's direct or transitive `needs` so log collection starts after they finish.
   analyze-failures:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Analyze CI failures
+    name: Analyze CI failures
     if: >-
       ${{
         always() &&
@@ -928,7 +780,7 @@ jobs:
           cat "${SUMMARY_FILE}" >> "${GITHUB_STEP_SUMMARY}"
 
   publish-failure-analysis:
-    name: ${{ inputs.workflow_id && format('{0} / ', inputs.workflow_id) || '' }}Add failure analysis to CI results
+    name: Add failure analysis to CI results
     if: >-
       ${{
         always() &&
@@ -945,7 +797,7 @@ jobs:
         uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          header: ci-results${{ inputs.workflow_id && format('-{0}', inputs.workflow_id) || '' }}
+          header: ci-results
           number: ${{ needs.analyze-failures.outputs.pr_number }}
           message: ${{ needs.analyze-failures.outputs.github_comment }}
           append: true

@@ -1,0 +1,95 @@
+name: "Parse CI Matrices"
+description: >-
+  Select named CI matrices for a workflow and resolve their paths and refs.
+
+inputs:
+  workflow:
+    description: >-
+      Workflow key in the CI_MATRICES configuration, such as pull_request or
+      nightly.
+    required: true
+  matrices:
+    description: >-
+      JSON from vars.CI_MATRICES, mapping workflow keys to objects of name:
+      path@ref selectors. Empty paths default to ci/matrix.yaml; missing or
+      empty refs use the triggering ref.
+    required: false
+    default: "{}"
+  matrix_ref:
+    description: >-
+      Explicit matrix ref. A nonempty ref or path overrides matrices; an empty
+      ref uses the triggering ref.
+    required: false
+    default: ""
+  matrix_path:
+    description: >-
+      Explicit matrix path. A nonempty ref or path overrides matrices; an empty
+      path defaults to ci/matrix.yaml.
+    required: false
+    default: ""
+
+outputs:
+  matrix:
+    description: >-
+      JSON matrix with include entries containing name, matrix_path, and
+      matrix_ref. Missing or empty profiles produce one default entry.
+    value: ${{ steps.parse.outputs.result }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Parse CI matrices
+      id: parse
+      uses: actions/github-script@v9
+      env:
+        INPUT_WORKFLOW: ${{ inputs.workflow }}
+        INPUT_MATRICES: ${{ inputs.matrices }}
+        INPUT_MATRIX_REF: ${{ inputs.matrix_ref }}
+        INPUT_MATRIX_PATH: ${{ inputs.matrix_path }}
+      with:
+        script: |
+          const workflow = core.getInput("workflow", { required: true });
+          const matrixRef = core.getInput("matrix_ref");
+          const matrixPath = core.getInput("matrix_path");
+
+          if (matrixRef || matrixPath) {
+            return {
+              include: [{
+                name: "user_defined",
+                matrix_path: matrixPath || "ci/matrix.yaml",
+                matrix_ref: matrixRef || context.ref
+              }]
+            };
+          }
+
+          const configuration = JSON.parse(core.getInput("matrices") || "{}") ?? {};
+          if (typeof configuration !== "object" || Array.isArray(configuration)) {
+            throw new Error("CI_MATRICES must be an object");
+          }
+
+          const matrices = (Object.hasOwn(configuration, workflow) ? configuration[workflow] : null) ?? {};
+          if (typeof matrices !== "object" || Array.isArray(matrices)) {
+            throw new Error(`CI_MATRICES[${workflow}] must be an object`);
+          }
+
+          const entries = Object.entries(matrices);
+          if (entries.length === 0) {
+            entries.push(["default", ""]);
+          }
+
+          return {
+            include: entries.map(([name, selector]) => {
+              if (!/^[A-Za-z0-9_.-]+$/.test(name)) {
+                throw new Error(`Invalid CI matrix name: ${name}`);
+              }
+              if (typeof selector !== "string") {
+                throw new Error(`CI_MATRICES[${workflow}][${name}] must be a path@ref string`);
+              }
+              const [path, ...ref] = selector.split("@");
+              return {
+                name,
+                matrix_path: path || "ci/matrix.yaml",
+                matrix_ref: ref.join("@") || context.ref
+              };
+            })
+          };

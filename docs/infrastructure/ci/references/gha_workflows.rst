@@ -15,7 +15,8 @@ Reusable workflows
 
 ``ci-workflow-pull-request.yml``, ``ci-workflow-nightly.yml``, and
 ``ci-workflow-weekly.yml`` support ``workflow_call`` alongside their push,
-schedule, or manual triggers.
+schedule, or manual triggers. Each profile selects its matrices and fans out
+calls to ``ci-matrix-build.yml``.
 ``ci-workflow-custom.yml`` provides manual dispatch of ``ci-matrix-build.yml``,
 passing its ``workflows`` and ``matrix_ref`` inputs. The ``workflows`` input
 defaults to ``nightly``. Other workflows call ``ci-matrix-build.yml`` directly.
@@ -38,9 +39,44 @@ Callable CI profiles and the matrix builder test the triggering commit in the
 caller repository. Matrix files also come from the caller repository, but their
 ref can be selected independently and defaults to the calling ref.
 
-When calling a CI implementation more than once in a run, use a different
-``workflow_id`` for each invocation. This scopes its artifacts, job timings,
-failure analysis, and PR comments. An empty identifier preserves the unscoped
+The nightly and weekly manual dispatches and all three callable CI profiles
+accept optional ``matrix_ref`` and ``matrix_path`` inputs, both defaulting to
+empty. Providing either selects a single matrix named ``user_defined`` and
+ignores ``CI_MATRICES``. An empty ref uses the triggering ref; an empty path uses
+``ci/matrix.yaml``.
+
+When both inputs are empty, the CI profiles read the ``CI_MATRICES`` repository
+variable as JSON. Each workflow key (``pull_request``, ``nightly``, or ``weekly``)
+maps matrix names to ``path@ref`` selectors. For example:
+
+.. code-block:: json
+
+    {
+      "nightly": {
+        "standard": "ci/matrix.yaml",
+        "extended": "ci/matrix.yaml@ci-config"
+      }
+    }
+
+A missing or empty ref uses the triggering ref. An empty path uses
+``ci/matrix.yaml``. Missing configuration, a missing workflow key, or an empty
+workflow object selects one matrix named ``default`` with both defaults.
+Matrix names may contain letters, digits, dots, hyphens, or underscores. Each
+selected matrix runs through ``ci-matrix-build.yml`` with a ``workflow_id`` formed
+from its profile and matrix name. Its artifacts, job timings, and matrix result
+comments stay separate from the other invocations.
+
+Documentation, devcontainer checks, third-party builds, and regular benchmarks
+run once per trigger. Compile-time benchmark and SASS configurations are combined
+from the selected matrices. The PR workflow has one overall ``CI`` gate, and each
+profile analyzes failures once after its relevant jobs finish.
+
+Direct matrix builds
+~~~~~~~~~~~~~~~~~~~~
+
+Call ``ci-matrix-build.yml`` directly to select a single matrix independently of
+``CI_MATRICES``. When calling it more than once in a run, use a different
+``workflow_id`` for each invocation. An empty identifier preserves the unscoped
 behavior of a single invocation.
 
 .. list-table::
@@ -67,16 +103,14 @@ For example, a caller can select a matrix from another ref:
 
     jobs:
       ci:
-        uses: NVIDIA/cccl/.github/workflows/ci-workflow-nightly.yml@main
+        uses: NVIDIA/cccl/.github/workflows/ci-matrix-build.yml@main
         permissions:
           actions: read
-          checks: read
           contents: read
           id-token: write
-          packages: read
-          pull-requests: read
         with:
           workflow_id: nightly-ci-config
+          workflows: nightly
           matrix_ref: ci-config
           matrix_path: ci/matrix.yaml
 
@@ -106,13 +140,16 @@ invoke any of these directly; they fire on push or schedule.
      - Purpose
    * - ``.github/workflows/ci-workflow-pull-request.yml``
      - Automatic / reusable
-     - Runs the ``pull_request`` matrix on every push to a ``pull-request/<N>`` branch.
+     - Runs selected PR matrices on pushes to ``pull-request/<N>`` branches and
+       aggregates their CI results with the shared checks.
    * - ``.github/workflows/ci-workflow-nightly.yml``
      - Scheduled / manual / reusable
-     - Runs the broader ``nightly`` matrix on a weekday schedule, with AI failure analysis and Slack notifications.
+     - Runs selected ``nightly`` matrices, third-party builds, failure analysis,
+       and Slack notifications on weekdays or manual dispatch.
    * - ``.github/workflows/ci-workflow-weekly.yml``
      - Scheduled / manual / reusable
-     - Runs the exhaustive ``weekly`` matrix on a Sunday schedule, with AI failure analysis and Slack notifications.
+     - Runs selected ``weekly`` matrices, failure analysis, and Slack
+       notifications on Sundays or manual dispatch.
    * - ``.github/workflows/ci-workflow-custom.yml``
      - Manual
      - Runs selected workflows from a matrix on another branch in the same
@@ -218,7 +255,7 @@ each key to its job specs:
       "windows_standalone": { "keys": [...], "jobs": {...} }
     }
 
-``ci-workflow-pull-request.yml`` dispatches four parallel matrix jobs, one per
+``ci-matrix-build.yml`` dispatches four parallel matrix jobs, one per
 bucket. Each fans out over its bucket's ``keys`` and calls the matching dispatcher
 workflow — ``workflow-dispatch-<structure>-group-<os>.yml``.
 
