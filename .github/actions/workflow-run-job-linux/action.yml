@@ -238,6 +238,6 @@ runs:
 
     - name: Upload job artifacts
       if: ${{ always() && steps.run.outputs.ARTIFACTS != '' && fromJson(steps.run.outputs.ARTIFACTS)[0] != null }}
-      uses: ./.github/actions/upload-artifacts
+      uses: $/.github/actions/upload-artifacts
       with:
         artifacts: ${{ steps.run.outputs.ARTIFACTS }}

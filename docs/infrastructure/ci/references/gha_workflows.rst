@@ -10,13 +10,41 @@ explains the workflow-file mechanics that turn one push into hundreds of jobs.
 For the high-level CI narrative — triggering, change detection, the ``ci:`` gate —
 see :ref:`infra-ci-overview`.
 
+Reusable workflows
+------------------
+
+``ci-workflow-pull-request.yml``, ``ci-workflow-nightly.yml``, and
+``ci-workflow-weekly.yml`` support ``workflow_call`` alongside their push,
+schedule, or manual triggers.
+``ci-workflow-custom.yml`` provides manual dispatch of ``ci-matrix-build.yml``,
+passing its ``workflows`` and ``matrix_branch`` inputs. The ``workflows`` input
+defaults to ``nightly``. Other workflows call ``ci-matrix-build.yml`` directly.
+Nested workflow calls use ``$/.github/workflows/...``
+to reference implementations in the workflow's own repository and commit.
+
+.. note::
+   The use of ``$/`` references require self-hosted runners to use
+   GitHub Actions runner version 2.336.0 or newer.
+
+Callers must grant the token permissions needed by the called jobs.
+Pass any required secrets through an explicit secret mapping, or use
+``secrets: inherit`` within the same organization or enterprise. CI profiles
+control concurrency for their runs.
+
+Source and matrix access, run artifacts, and pull request comments use the
+caller's ``GITHUB_TOKEN``.
+
+Matrix jobs fall back to GitHub-hosted runners for forks. Repositories enabled
+for self-hosted CI use the matrix's runner labels. The PR profile expects a
+``pull-request/<N>`` branch and requires ``pull-requests: write`` to post comments.
+
 Workflow reference
 ------------------
 
 CI matrix
 ~~~~~~~~~
 
-Three trigger workflows select a matrix key and run it. Six dispatcher workflows
+The CI profiles select a matrix key and run it. Six reusable dispatcher workflows
 unfold the generated job list into GitHub matrix strategies. Contributors rarely
 invoke any of these directly; they fire on push or schedule.
 
@@ -28,14 +56,21 @@ invoke any of these directly; they fire on push or schedule.
      - Trigger
      - Purpose
    * - ``.github/workflows/ci-workflow-pull-request.yml``
-     - Automatic
+     - Automatic / reusable
      - Runs the ``pull_request`` matrix on every push to a ``pull-request/<N>`` branch.
    * - ``.github/workflows/ci-workflow-nightly.yml``
-     - Both
+     - Scheduled / manual / reusable
      - Runs the broader ``nightly`` matrix on a weekday schedule, with AI failure analysis and Slack notifications.
    * - ``.github/workflows/ci-workflow-weekly.yml``
-     - Both
+     - Scheduled / manual / reusable
      - Runs the exhaustive ``weekly`` matrix on a Sunday schedule, with AI failure analysis and Slack notifications.
+   * - ``.github/workflows/ci-workflow-custom.yml``
+     - Manual
+     - Runs selected workflows from a matrix on another branch in the same
+       repository; defaults to ``nightly``.
+   * - ``.github/workflows/ci-matrix-build.yml``
+     - Reusable
+     - Builds and dispatches the selected matrix and summarizes its results.
    * - ``.github/workflows/workflow-dispatch-standalone-group-linux.yml``
      - Automatic
      - Dispatches an array of standalone Linux jobs as a matrix.
@@ -97,7 +132,7 @@ The build-workflow action
 
 The "build workflow from matrix" job runs the ``build-workflow`` action at
 ``.github/actions/workflow-build/``. Its script ``build-workflow.py`` reads
-``ci/matrix.yaml`` together with the change-detection output from
+the selected matrix file together with any change-detection output from
 ``ci/inspect_changes.py`` and produces ``workflow/workflow.json``. That file holds
 named groups — "CUB GCC", for example — each carrying a ``standalone`` array and a
 ``two_stage`` array of fully expanded job specs.

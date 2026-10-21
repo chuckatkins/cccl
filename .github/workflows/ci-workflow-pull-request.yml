@@ -24,9 +24,23 @@ on:
   push:
     branches:
       - "pull-request/[0-9]+"
+  workflow_call:
+    secrets:
+      NVINFERENCE_API_KEY:
+        description: NVIDIA Inference Hub API key for CI failure analysis and SASS triage.
+        required: false
+      SLACK_CHANNEL_CI_ALERT:
+        description: Slack channel ID for CI failure alerts.
+        required: false
+      SLACK_CHANNEL_RAPIDS_CI_ALERT:
+        description: Slack channel ID for RAPIDS CI failure alerts.
+        required: false
+      SLACK_NOTIFIER_BOT_TOKEN:
+        description: Slack bot token for CI notifications.
+        required: false
 
 concurrency:
-  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}
+  group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}-pull-request
   cancel-in-progress: true
 
 jobs:
@@ -212,7 +226,7 @@ jobs:
         # Skip building the matrix when disabled, but still gather PR info for downstream jobs
         if: steps.export-flags.outputs.matrix_enabled == 'true'
         id: build-workflow
-        uses: ./.github/actions/workflow-build
+        uses: $/.github/actions/workflow-build
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           pr_number: ${{ steps.export-pr-info.outputs.pr_number }}
@@ -241,7 +255,7 @@ jobs:
       fail-fast: false
       matrix:
         name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['linux_two_stage']['keys'] }}
-    uses: ./.github/workflows/workflow-dispatch-two-stage-group-linux.yml
+    uses: $/.github/workflows/workflow-dispatch-two-stage-group-linux.yml
     with:
       pc-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['linux_two_stage']['jobs'][matrix.name]) }}
 
@@ -260,7 +274,7 @@ jobs:
       fail-fast: false
       matrix:
         name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['windows_two_stage']['keys'] }}
-    uses: ./.github/workflows/workflow-dispatch-two-stage-group-windows.yml
+    uses: $/.github/workflows/workflow-dispatch-two-stage-group-windows.yml
     with:
       pc-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['windows_two_stage']['jobs'][matrix.name]) }}
 
@@ -279,7 +293,7 @@ jobs:
       fail-fast: false
       matrix:
         name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['linux_standalone']['keys'] }}
-    uses: ./.github/workflows/workflow-dispatch-standalone-group-linux.yml
+    uses: $/.github/workflows/workflow-dispatch-standalone-group-linux.yml
     with:
       job-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['linux_standalone']['jobs'][matrix.name]) }}
 
@@ -298,7 +312,7 @@ jobs:
       fail-fast: false
       matrix:
         name: ${{ fromJSON(needs.build-workflow.outputs.workflow)['windows_standalone']['keys'] }}
-    uses: ./.github/workflows/workflow-dispatch-standalone-group-windows.yml
+    uses: $/.github/workflows/workflow-dispatch-standalone-group-windows.yml
     with:
       job-array: ${{ toJSON(fromJSON(needs.build-workflow.outputs.workflow)['windows_standalone']['jobs'][matrix.name]) }}
 
@@ -329,7 +343,7 @@ jobs:
 
       - name: Check workflow success
         id: check-workflow
-        uses: ./.github/actions/workflow-results
+        uses: $/.github/actions/workflow-results
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           pr_number: ${{ needs.build-workflow.outputs.pr_number }}
@@ -341,7 +355,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    uses: ./.github/workflows/verify-devcontainers.yml
+    uses: $/.github/workflows/verify-devcontainers.yml
     with:
       base_sha: ${{ needs.build-workflow.outputs.base_sha }}
 
@@ -365,7 +379,7 @@ jobs:
           persist-credentials: false
 
       - name: Build docs
-        uses: ./.github/actions/docs-build
+        uses: $/.github/actions/docs-build
         with:
           upload_workflow_artifact: "false"
 
@@ -384,7 +398,7 @@ jobs:
       id-token: write
       contents: read
       pull-requests: read
-    uses: ./.github/workflows/build-rapids.yml
+    uses: $/.github/workflows/build-rapids.yml
 
   build-matx:
     name: Build MatX (optional)
@@ -398,7 +412,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    uses: ./.github/workflows/build-matx.yml
+    uses: $/.github/workflows/build-matx.yml
 
   build-pytorch:
     name: Build PyTorch (optional)
@@ -412,7 +426,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    uses: ./.github/workflows/build-pytorch.yml
+    uses: $/.github/workflows/build-pytorch.yml
 
   # Test that cuda.compute can be imported on a CPU-only machine (no CUDA drivers).
   test-cpu-import:
@@ -494,7 +508,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.build-workflow.outputs.bench_matrix) }}
-    uses: ./.github/workflows/bench.yml
+    uses: $/.github/workflows/bench.yml
     with:
       gpu: ${{ matrix.gpu }}
       launch_args: ${{ matrix.launch_args }}
@@ -527,7 +541,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.build-workflow.outputs.compile_time_matrix) }}
-    uses: ./.github/workflows/compile-time-bench.yml
+    uses: $/.github/workflows/compile-time-bench.yml
     with:
       id: ${{ matrix.id }}
       name: ${{ matrix.name }}
@@ -560,7 +574,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.build-workflow.outputs.sass_matrix) }}
-    uses: ./.github/workflows/sass-diff.yml
+    uses: $/.github/workflows/sass-diff.yml
     with:
       id: ${{ matrix.id }}
       launch_args: ${{ matrix.launch_args }}
@@ -838,7 +852,7 @@ jobs:
 
       - name: Analyze failures
         id: analyze
-        uses: ./.github/actions/ci-failure-analysis
+        uses: $/.github/actions/ci-failure-analysis
         with:
           inference_api_key: ${{ secrets.NVINFERENCE_API_KEY }}
           run_id: ${{ github.run_id }}
@@ -847,7 +861,7 @@ jobs:
       - name: Render GitHub failure analysis comment
         if: ${{ !cancelled() && steps.analyze.outcome == 'success' }}
         id: render-github-comment
-        uses: ./.github/actions/ci-failure-analysis-render
+        uses: $/.github/actions/ci-failure-analysis-render
         with:
           analysis_file: ${{ steps.analyze.outputs.analysis_file }}
           format: github-comment
@@ -855,7 +869,7 @@ jobs:
       - name: Render GitHub verbose failure analysis summary
         if: ${{ !cancelled() && steps.analyze.outcome == 'success' }}
         id: render-github-verbose-summary
-        uses: ./.github/actions/ci-failure-analysis-render
+        uses: $/.github/actions/ci-failure-analysis-render
         with:
           analysis_file: ${{ steps.analyze.outputs.analysis_file }}
           format: github-verbose-summary
